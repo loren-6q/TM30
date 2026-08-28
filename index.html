@@ -1,0 +1,474 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TM30 Dashboard</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <!-- SheetJS for generating strict .xlsx files directly in the browser -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+    <style>
+        body { font-family: 'Inter', sans-serif; }
+        .mono-font { font-family: 'JetBrains Mono', monospace; }
+        ::-webkit-scrollbar { width: 6px; height: 6px; }
+        ::-webkit-scrollbar-track { background: #0f172a; }
+        ::-webkit-scrollbar-thumb { background: #334155; border-radius: 4px; }
+        ::-webkit-scrollbar-thumb:hover { background: #475569; }
+        @keyframes highlight-flash {
+            0% { background-color: rgba(16, 185, 129, 0.2); }
+            100% { background-color: transparent; }
+        }
+        .new-row { animation: highlight-flash 3s ease-out; }
+    </style>
+</head>
+<body class="bg-slate-950 text-slate-100 min-h-screen flex flex-col">
+
+    <div id="toast-container" class="fixed top-5 right-5 z-50 flex flex-col gap-2 pointer-events-none"></div>
+
+    <header class="bg-slate-900 border-b border-slate-800 px-4 py-2 flex items-center justify-between sticky top-0 z-40 shadow-md">
+        <div class="flex items-center gap-3">
+            <div class="h-8 w-8 rounded-lg bg-gradient-to-tr from-sky-500 to-blue-600 flex items-center justify-center relative">
+                <i data-lucide="layout-dashboard" class="text-white w-4 h-4"></i>
+                <span id="connection-dot" class="absolute -top-1 -right-1 flex h-2.5 w-2.5">
+                    <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75"></span>
+                    <span class="relative inline-flex rounded-full h-2.5 w-2.5 bg-red-500 border border-slate-900"></span>
+                </span>
+            </div>
+            <div>
+                <h1 class="font-bold text-base tracking-tight text-white flex items-center gap-2">
+                    TM30 Dashboard <span class="text-[9px] bg-sky-500/10 text-sky-400 font-semibold px-1.5 py-0.5 rounded uppercase tracking-wider border border-sky-500/20">Awaiting Sync</span>
+                </h1>
+            </div>
+        </div>
+        <div class="flex items-center gap-2">
+            <button id="clear-queue-btn" onclick="markAllAsFiled(this)" class="hidden bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold py-1.5 px-3 rounded items-center gap-1.5 transition-all border border-slate-700">
+                <i data-lucide="trash-2" class="w-3.5 h-3.5"></i> Clear All
+            </button>
+            <button id="export-excel-btn" onclick="exportToExcel()" class="hidden bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold py-1.5 px-3 rounded items-center gap-1.5 transition-all shadow-lg shadow-emerald-900/50 border border-emerald-500/50">
+                <i data-lucide="file-spreadsheet" class="w-3.5 h-3.5 text-emerald-100"></i> Batch Export (.xlsx)
+            </button>
+            <button id="bulk-send-btn" onclick="sendAllToExtension()" class="hidden bg-sky-600 hover:bg-sky-500 text-white text-xs font-semibold py-1.5 px-3 rounded items-center gap-1.5 transition-all">
+                <i data-lucide="blocks" class="w-3.5 h-3.5 text-sky-200"></i> Ext. Fill
+            </button>
+        </div>
+    </header>
+
+    <main class="flex-1 overflow-hidden flex flex-col p-0 m-0">
+        <div class="bg-slate-900 flex-1 flex flex-col overflow-hidden">
+            
+            <div id="empty-state" class="flex-1 flex flex-col items-center justify-center text-center p-8">
+                <div class="h-16 w-16 bg-slate-800/50 rounded-full flex items-center justify-center mb-3">
+                    <i data-lucide="smartphone" class="w-8 h-8 text-slate-500"></i>
+                </div>
+                <h3 class="text-base font-semibold text-slate-300">Ready to Receive</h3>
+                <p class="text-xs text-slate-500 max-w-sm mt-1">Take a photo of a passport and send it to your Telegram bot.</p>
+            </div>
+
+            <div id="table-container" class="flex-1 overflow-auto hidden bg-slate-950">
+                <table class="w-full text-left border-collapse">
+                    <thead class="bg-slate-800 sticky top-0 z-10 shadow-sm border-b border-slate-600">
+                        <tr class="text-[11px] font-bold text-slate-300 uppercase tracking-tight">
+                            <th class="px-2 py-1.5 border-r border-slate-700">First Name</th>
+                            <th class="px-2 py-1.5 border-r border-slate-700">Last Name</th>
+                            <th class="px-2 py-1.5 border-r border-slate-700">Passport No.</th>
+                            <th class="px-2 py-1.5 border-r border-slate-700">Nationality</th>
+                            <th class="px-2 py-1.5 border-r border-slate-700 text-center">DOB</th>
+                            <th class="px-2 py-1.5 border-r border-slate-700 text-center">Gen</th>
+                            <th class="px-2 py-1.5 text-center">Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody id="submissions-list" class="divide-y divide-slate-800 bg-slate-900">
+                        <!-- Rows injected via JS -->
+                    </tbody>
+                </table>
+            </div>
+
+        </div>
+    </main>
+
+<!-- Edit Modal -->
+<div id="edit-modal" class="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 hidden flex items-center justify-center transition-opacity duration-300">
+    <div class="bg-slate-900 border border-slate-800 rounded-xl shadow-2xl p-6 w-full max-w-md">
+        <h3 class="text-lg font-bold text-white mb-4 flex items-center gap-2"><i data-lucide="edit-3" class="w-5 h-5 text-sky-400"></i> Edit Guest Details</h3>
+        <input type="hidden" id="edit-id">
+        <div class="grid grid-cols-2 gap-4 mb-4">
+            <div><label class="block text-xs text-slate-400 mb-1">First Name</label><input type="text" id="edit-fname" class="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-white text-sm focus:border-sky-500 focus:outline-none uppercase"></div>
+            <div><label class="block text-xs text-slate-400 mb-1">Last Name</label><input type="text" id="edit-lname" class="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-white text-sm focus:border-sky-500 focus:outline-none uppercase"></div>
+            <div><label class="block text-xs text-slate-400 mb-1">Passport</label><input type="text" id="edit-passport" class="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-white text-sm font-mono focus:border-sky-500 focus:outline-none uppercase"></div>
+            <div><label class="block text-xs text-slate-400 mb-1">Nationality</label><input type="text" id="edit-nationality" class="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-white text-sm focus:border-sky-500 focus:outline-none uppercase"></div>
+            
+            <div class="col-span-2 flex gap-2">
+                <div class="flex-1"><label class="block text-xs text-slate-400 mb-1">DD</label><input type="text" id="edit-dd" class="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-white text-sm font-mono text-center focus:border-sky-500 focus:outline-none" maxlength="2"></div>
+                <div class="flex-1"><label class="block text-xs text-slate-400 mb-1">MM</label><input type="text" id="edit-mm" class="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-white text-sm font-mono text-center focus:border-sky-500 focus:outline-none" maxlength="2"></div>
+                <div class="flex-1"><label class="block text-xs text-slate-400 mb-1">YYYY</label><input type="text" id="edit-yyyy" class="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-white text-sm font-mono text-center focus:border-sky-500 focus:outline-none" maxlength="4"></div>
+                <div class="flex-1"><label class="block text-xs text-slate-400 mb-1">Gender</label>
+                    <select id="edit-gender" class="w-full bg-slate-950 border border-slate-800 rounded-lg px-2 py-2 text-white text-sm focus:border-sky-500 focus:outline-none">
+                        <option value="MALE">Male</option>
+                        <option value="FEMALE">Female</option>
+                    </select>
+                </div>
+            </div>
+        </div>
+        <div class="flex justify-end gap-3 mt-6">
+            <button onclick="closeEditModal()" class="px-4 py-2 text-sm font-medium text-slate-400 hover:text-white transition-colors">Cancel</button>
+            <button onclick="saveEdit()" class="bg-sky-600 hover:bg-sky-500 text-white px-5 py-2 rounded-lg text-sm font-semibold transition-all shadow-lg shadow-sky-500/20">Save Changes</button>
+        </div>
+    </div>
+</div>
+
+<script type="module">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+    import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+    import { getFirestore, collection, onSnapshot, doc, updateDoc, deleteDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+    let currentSubmissionsList = [];
+
+        window.copyData = function(text, btnElement) {
+            if (!text || text === '-') return;
+            const dummy = document.createElement("textarea");
+            document.body.appendChild(dummy); dummy.value = text; dummy.select(); document.execCommand("copy"); document.body.removeChild(dummy);
+            const originalHTML = btnElement.innerHTML;
+            btnElement.innerHTML = `<i data-lucide="check" class="w-4 h-4 text-white"></i> Copied`;
+            btnElement.classList.replace('bg-slate-800', 'bg-emerald-600'); btnElement.classList.replace('text-slate-300', 'text-white');
+            lucide.createIcons();
+            showToast("Copied!", text);
+            setTimeout(() => {
+                btnElement.innerHTML = originalHTML;
+                btnElement.classList.replace('bg-emerald-600', 'bg-slate-800'); btnElement.classList.replace('text-white', 'text-slate-300');
+        lucide.createIcons();
+    }, 1000);
+};
+
+window.openEditModal = function(docId) {
+    const guest = currentSubmissionsList.find(g => g.id === docId);
+    if(!guest) return;
+    document.getElementById('edit-id').value = guest.id;
+    document.getElementById('edit-fname').value = guest.firstName || '';
+    document.getElementById('edit-lname').value = guest.lastName || '';
+    document.getElementById('edit-passport').value = guest.passportNumber || '';
+    document.getElementById('edit-nationality').value = guest.nationality || '';
+    document.getElementById('edit-dd').value = guest.dobDay || '';
+    document.getElementById('edit-mm').value = guest.dobMonth || '';
+    document.getElementById('edit-yyyy').value = guest.dobYear || '';
+    document.getElementById('edit-gender').value = (guest.gender || 'M').startsWith('M') ? 'MALE' : 'FEMALE';
+    document.getElementById('edit-modal').classList.remove('hidden');
+};
+
+window.closeEditModal = function() {
+    document.getElementById('edit-modal').classList.add('hidden');
+};
+
+window.saveEdit = async function() {
+    const docId = document.getElementById('edit-id').value;
+    const data = {
+        firstName: document.getElementById('edit-fname').value.toUpperCase(),
+        lastName: document.getElementById('edit-lname').value.toUpperCase(),
+        passportNumber: document.getElementById('edit-passport').value.toUpperCase().replace(/\s/g, ''),
+        nationality: document.getElementById('edit-nationality').value.toUpperCase(),
+        dobDay: document.getElementById('edit-dd').value,
+        dobMonth: document.getElementById('edit-mm').value,
+        dobYear: document.getElementById('edit-yyyy').value,
+        gender: document.getElementById('edit-gender').value
+    };
+    const db = getFirestore();
+    const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+    await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'submissions', docId), data);
+    closeEditModal();
+    showToast("Updated", "Guest details saved.", "success");
+};
+
+window.deleteGuest = async function(docId, btnElement) {
+    if (btnElement.dataset.confirm !== "true") {
+        btnElement.dataset.confirm = "true";
+        const oldHtml = btnElement.innerHTML;
+        btnElement.dataset.old = oldHtml;
+        btnElement.innerHTML = `<i data-lucide="alert-triangle" class="w-4 h-4"></i>`;
+        btnElement.classList.add('text-red-500', 'bg-red-500/10');
+        btnElement.classList.remove('text-slate-400');
+        lucide.createIcons();
+        setTimeout(() => {
+            if (btnElement && btnElement.dataset.confirm === "true") {
+                btnElement.dataset.confirm = "false";
+                btnElement.innerHTML = btnElement.dataset.old;
+                btnElement.classList.remove('text-red-500', 'bg-red-500/10');
+                btnElement.classList.add('text-slate-400');
+                lucide.createIcons();
+            }
+        }, 3000);
+        return;
+    }
+    const db = getFirestore();
+    const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+    await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'submissions', docId));
+    showToast("Deleted", "Guest removed from database.", "success");
+};
+
+window.markAllAsFiled = async function(btnElement) {
+    const originalHTML = btnElement.innerHTML;
+    btnElement.innerHTML = `<i data-lucide="loader-2" class="w-4 h-4 animate-spin text-slate-400"></i> Clearing...`;
+    const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+    const db = getFirestore();
+    
+    try {
+        const promises = currentSubmissionsList.map(sub => 
+            updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'submissions', sub.id), { status: 'completed' })
+        );
+        await Promise.all(promises);
+        showToast("Queue Cleared", "All displayed guests marked as filed.", "success");
+    } catch(e) {
+        showToast("Error", "Failed to clear queue.", "error");
+    }
+    setTimeout(() => {
+        btnElement.innerHTML = originalHTML;
+        lucide.createIcons();
+    }, 500);
+};
+
+window.markAsFiled = async function(docId, btnElement) {
+            btnElement.innerHTML = `<i data-lucide="loader-2" class="w-4 h-4 animate-spin"></i> Processing...`;
+            const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+            const db = getFirestore();
+            const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'submissions', docId);
+            try {
+                await updateDoc(docRef, { status: 'completed' });
+                showToast("Success", "Guest marked as filed and removed from queue.", "success");
+            } catch(e) {
+                showToast("Error", "Failed to update database.", "error");
+                btnElement.innerHTML = `<i data-lucide="check-circle" class="w-4 h-4"></i> Mark Filed`;
+                lucide.createIcons();
+            }
+        };
+
+        window.exportToExcel = function() {
+            if(currentSubmissionsList.length === 0) return;
+
+            const headers = [
+                "ชื่อ\nFirst Name *",
+                "ชื่อกลาง\nMiddle Name",
+                "นามสกุล\nLast Name",
+                "เพศ\nGender *",
+                "เลขหนังสือเดินทาง\nPassport No. *",
+                "สัญชาติ\nNationality *",
+                "วัน เดือน ปี เกิด\nBirth Date\nDD/MM/YYYY(ค.ศ. / A.D.) \nเช่น 17/06/1985 หรือ 10/00/1985 หรือ 00/00/1985",
+                "วันที่แจ้งออกจากที่พัก\nCheck-out Date\nDD/MM/YYYY(ค.ศ. / A.D.) \nเช่น 14/06/2023",
+                "เบอร์โทรศัพท์\nPhone No."
+            ];
+
+            const rows = currentSubmissionsList.map(sub => {
+                const day = sub.dobDay || '00';
+                const month = sub.dobMonth || '00';
+                const year = sub.dobYear || '0000';
+                const genderDisp = (sub.gender || "M").startsWith('M') ? 'Male' : 'Female';
+
+                return [
+                    sub.firstName || '',
+                    '', 
+                    sub.lastName || '',
+                    genderDisp,
+                    sub.passportNumber || '',
+                    sub.nationality || '',
+                    `${day}/${month}/${year}`,
+                    '', 
+                    ''  
+                ];
+            });
+
+            const wsData = [headers, ...rows];
+            
+            const ws = XLSX.utils.aoa_to_sheet(wsData);
+            const wb = XLSX.utils.book_new();
+            XLSX.utils.book_append_sheet(wb, ws, "TM30 Batch Upload");
+            
+            const dateStr = new Date().toISOString().split('T')[0];
+            XLSX.writeFile(wb, `TM30_Batch_${dateStr}.xlsx`);
+            
+            showToast("Excel Downloaded", `${rows.length} guests packed and ready to upload!`, "success");
+        };
+
+        window.sendAllToExtension = function() {
+            if(currentSubmissionsList.length === 0) return;
+            
+            const bulkPayload = currentSubmissionsList.map(sub => ({
+                tm30Payload: true,
+                id: sub.id,
+                firstName: sub.firstName || '',
+                lastName: sub.lastName || '',
+                passport: sub.passportNumber || '',
+                nationality: sub.nationality || '',
+                dobDay: sub.dobDay || 'DD',
+                dobMonth: sub.dobMonth || 'MM',
+                dobYear: sub.dobYear || 'YYYY',
+                gender: (sub.gender || "M").startsWith('M') ? 'Male' : 'Female'
+            }));
+
+            const dummy = document.createElement("textarea");
+            document.body.appendChild(dummy);
+            dummy.value = JSON.stringify(bulkPayload);
+            dummy.select();
+            document.execCommand("copy");
+            document.body.removeChild(dummy);
+
+            showToast("Bulk Data Ready", `${bulkPayload.length} guests sent to clipboard. Open the TM30 site and click the extension!`, "success");
+        };
+
+        function showToast(title, text, type = "success") {
+            const container = document.getElementById('toast-container');
+            const toast = document.createElement('div');
+            let accent = type === "error" ? "border-red-500/30 bg-red-950/90 text-red-300" : "border-sky-500/30 bg-slate-900/90 text-sky-300";
+            let icon = type === "error" ? "alert-triangle" : "check-circle";
+
+            toast.className = `flex items-start gap-3 p-4 rounded-xl border backdrop-blur-md shadow-2xl transition-all duration-300 transform translate-y-2 opacity-0 w-80 ${accent}`;
+            toast.innerHTML = `<i data-lucide="${icon}" class="w-5 h-5 shrink-0 mt-0.5"></i><div><h5 class="font-bold text-xs text-white">${title}</h5><p class="text-[10px] opacity-80 mt-1 leading-normal truncate">${text}</p></div>`;
+            container.appendChild(toast);
+            lucide.createIcons();
+
+            setTimeout(() => toast.classList.remove('translate-y-2', 'opacity-0'), 10);
+            setTimeout(() => { toast.classList.add('opacity-0', 'translate-y-[-10px]'); setTimeout(() => toast.remove(), 300); }, 3000);
+        }
+
+        let app, auth, db;
+        const appId = 'default-app-id';
+        
+        const firebaseConfig = {
+            apiKey: "AIzaSyAQoXOVNXL1ZpDADc187xOFgoCuUK1_L8w",
+            authDomain: "auto-tm30.firebaseapp.com",
+            projectId: "auto-tm30",
+            storageBucket: "auto-tm30.firebasestorage.app",
+            messagingSenderId: "319156875694",
+            appId: "1:319156875694:web:a08b46ac4667084198d83f"
+        };
+
+        try {
+            app = initializeApp(firebaseConfig);
+            auth = getAuth(app);
+            db = getFirestore(app);
+            
+            const initAuth = async () => {
+                try {
+                    // Force anonymous login so it doesn't get blocked by security rules
+                    await signInAnonymously(auth);
+                } catch(e) { console.error("Auth error", e); }
+            };
+            initAuth();
+
+            onAuthStateChanged(auth, (user) => {
+                if (user) {
+                    console.log("🔥 Firebase Connected to auto-tm30. User ID:", user.uid);
+                    console.log("📁 Listening for data on App ID:", appId);
+                    document.getElementById('connection-dot').querySelector('.bg-red-500').classList.replace('bg-red-500', 'bg-sky-500');
+                    document.getElementById('connection-dot').querySelector('.bg-red-400').classList.replace('bg-red-400', 'bg-sky-400');
+                    document.querySelector('header h1 span').innerText = "Live Sync Active";
+                    startListening();
+                }
+            });
+        } catch (e) {
+            console.error("Firebase init failed", e);
+        }
+
+        let previousDocIds = new Set();
+
+        function startListening() {
+            const subsRef = collection(db, 'artifacts', appId, 'public', 'data', 'submissions');
+            
+            onSnapshot(subsRef, (snapshot) => {
+                console.log(`📡 Snapshot received! Found ${snapshot.size} documents.`);
+                let submissions = [];
+                snapshot.forEach((doc) => {
+                    const data = doc.data();
+                    if (data.status !== 'completed' && data.status !== 'failed') {
+                        submissions.push({ id: doc.id, ...data });
+                    }
+                });
+
+                submissions.sort((a, b) => {
+                    const timeA = a.createdAt?.toMillis() || 0;
+                    const timeB = b.createdAt?.toMillis() || 0;
+                    return timeB - timeA; 
+                });
+
+                currentSubmissionsList = submissions;
+                
+                const bulkBtn = document.getElementById('bulk-send-btn');
+                const excelBtn = document.getElementById('export-excel-btn');
+                
+                if (submissions.length > 0) {
+            bulkBtn.classList.remove('hidden');
+            bulkBtn.classList.add('flex');
+            bulkBtn.innerHTML = `<i data-lucide="layers" class="w-4 h-4 text-sky-200"></i> Send to Extension (${submissions.length})`;
+            
+            excelBtn.classList.remove('hidden');
+            excelBtn.classList.add('flex');
+
+            document.getElementById('clear-queue-btn').classList.remove('hidden');
+            document.getElementById('clear-queue-btn').classList.add('flex');
+            
+            lucide.createIcons();
+        } else {
+            bulkBtn.classList.add('hidden');
+            bulkBtn.classList.remove('flex');
+            excelBtn.classList.add('hidden');
+            excelBtn.classList.remove('flex');
+            document.getElementById('clear-queue-btn').classList.add('hidden');
+            document.getElementById('clear-queue-btn').classList.remove('flex');
+        }
+
+        renderTable(submissions);
+            });
+        }
+
+        function renderTable(submissions) {
+            const listEl = document.getElementById('submissions-list');
+            const emptyEl = document.getElementById('empty-state');
+            const tableContainer = document.getElementById('table-container');
+
+            if (submissions.length === 0) {
+                tableContainer.classList.add('hidden');
+                emptyEl.classList.remove('hidden');
+                return;
+            }
+
+            tableContainer.classList.remove('hidden');
+            emptyEl.classList.add('hidden');
+            
+            let html = '';
+            let newDocIds = new Set();
+
+            submissions.forEach(sub => {
+                newDocIds.add(sub.id);
+                const isNew = !previousDocIds.has(sub.id) && previousDocIds.size > 0;
+                const rowClass = isNew ? 'new-row' : '';
+                
+                const day = sub.dobDay || 'DD';
+                const month = sub.dobMonth || 'MM';
+                const year = sub.dobYear || 'YYYY';
+                const genderDisp = (sub.gender || "M").startsWith('M') ? 'M' : 'F';
+
+                html += `
+                <tr class="hover:bg-slate-800/80 transition-colors ${rowClass} text-slate-300 text-[12px]">
+                    <td class="px-2 py-1 border-r border-slate-700/50 cursor-pointer hover:bg-slate-700/50 truncate max-w-[120px]" onclick="copyData('${sub.firstName || ''}', this)" title="Click to copy">${sub.firstName || '-'}</td>
+                    <td class="px-2 py-1 border-r border-slate-700/50 cursor-pointer hover:bg-slate-700/50 truncate max-w-[120px]" onclick="copyData('${sub.lastName || ''}', this)" title="Click to copy">${sub.lastName || '-'}</td>
+                    <td class="px-2 py-1 border-r border-slate-700/50 cursor-pointer hover:bg-slate-700/50 font-mono text-sky-400 font-semibold" onclick="copyData('${sub.passportNumber || ''}', this)" title="Click to copy">${sub.passportNumber || '-'}</td>
+                    <td class="px-2 py-1 border-r border-slate-700/50 cursor-pointer hover:bg-slate-700/50 truncate max-w-[100px]" onclick="copyData('${sub.nationality || ''}', this)" title="Click to copy">${sub.nationality || '-'}</td>
+                    <td class="px-2 py-1 text-center border-r border-slate-700/50 font-mono text-slate-400 whitespace-nowrap">${day}/${month}/${year}</td>
+                    <td class="px-2 py-1 text-center border-r border-slate-700/50 font-bold">${genderDisp}</td>
+                    <td class="px-2 py-1 text-center whitespace-nowrap">
+                        <div class="flex items-center justify-center gap-3">
+                            <button onclick="openEditModal('${sub.id}')" title="Edit" class="text-slate-400 hover:text-sky-400 transition-colors"><i data-lucide="edit-3" class="w-4 h-4"></i></button>
+                            <button onclick="deleteGuest('${sub.id}', this)" title="Delete (Double tap)" class="text-slate-400 hover:text-red-400 transition-colors"><i data-lucide="trash-2" class="w-4 h-4"></i></button>
+                            <button onclick="markAsFiled('${sub.id}', this)" title="Mark as Filed" class="text-emerald-500 hover:text-emerald-400 transition-colors"><i data-lucide="check-square" class="w-4 h-4"></i></button>
+                        </div>
+                    </td>
+                </tr>
+                `;
+            });
+            listEl.innerHTML = html;
+            lucide.createIcons();
+            previousDocIds = newDocIds;
+        }
+
+        document.addEventListener("DOMContentLoaded", () => lucide.createIcons());
+    </script>
+</body>
+</html>
