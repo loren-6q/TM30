@@ -18,13 +18,7 @@ async function executeTM30Submission(appId, submissionDocId) {
     // LIVE DESK MODE: Send brief confirmation to phone.
     if (guestData.chatId && process.env.TELEGRAM_BOT_TOKEN) {
         
-        const shortMessage = `
-✅ *Passport Processed!*
-
-The details for *${guestData.firstName || "the guest"}* have been magically synced to your Web Dashboard.
-
-💻 _Look at your computer monitor to copy-paste the details directly into the Thai Immigration portal._
-`;
+        const shortMessage = `✅ *Passport Processed!*\nThe details for *${guestData.firstName || "the guest"}* have been synced to your Web Dashboard. 💻`;
 
         try {
             await axios.post(`https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/sendMessage`, {
