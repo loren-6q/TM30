@@ -3,6 +3,7 @@ const { defineSecret } = require("firebase-functions/params");
 const admin = require("firebase-admin");
 const axios = require("axios");
 
+/* STREAMING_CHUNK:Initializing Firebase and setup variables... */
 if (!admin.apps.length) {
     admin.initializeApp();
 }
@@ -23,6 +24,7 @@ async function sendTelegramText(chatId, text, token) {
     });
 }
 
+/* STREAMING_CHUNK:Defining the main Telegram Webhook... */
 exports.telegramBotWebhook = onRequest({
     secrets: ["TELEGRAM_BOT_TOKEN", "GEMINI_API_KEY"],
     region: "asia-southeast1", 
@@ -39,6 +41,7 @@ exports.telegramBotWebhook = onRequest({
         const chatId = message.chat.id;
         const messageId = message.message_id.toString();
         
+        /* STREAMING_CHUNK:Preventing duplicate processing... */
         const dedupeRef = db.collection("system").doc("telegram_cache").collection("processed").doc(messageId);
         const dedupeSnap = await dedupeRef.get();
         if (dedupeSnap.exists) {
@@ -49,11 +52,27 @@ exports.telegramBotWebhook = onRequest({
         const botToken = sanitizeSecret(telegramToken.value());
         const geminiKey = sanitizeSecret(geminiApiKey.value());
 
+        /* STREAMING_CHUNK:Setting up property routing logic... */
+        const chatMappingRef = db.collection("system").doc("chat_mappings").collection("chats").doc(chatId.toString());
+
+        if (message.text && message.text.startsWith("/setproperty")) {
+            const propertyName = message.text.split(" ")[1];
+            if (!propertyName) {
+                await sendTelegramText(chatId, "⚠️ Please specify a property.\n\nExample: `/setproperty SWIMS` or `/setproperty WET`", botToken);
+                return res.status(200).send({ ok: true });
+            }
+            await chatMappingRef.set({ property: propertyName.toUpperCase() });
+            await sendTelegramText(chatId, `✅ Success! This group chat is now permanently linked to: *${propertyName.toUpperCase()}*\n\nAll passports sent here will automatically be tagged for this property on the Dashboard.`, botToken);
+            return res.status(200).send({ ok: true });
+        }
+
+        /* STREAMING_CHUNK:Handling standard commands... */
         if (message.text && message.text.startsWith("/start")) {
             await sendTelegramText(chatId, "Sawadee krap! Welcome to the TM30 Submitter.\n\nSend me a flat, clear photo of a guest's passport biographical page to extract their details to the Web Dashboard.", botToken);
             return res.status(200).send({ ok: true });
         }
 
+        /* STREAMING_CHUNK:Processing incoming passport photos... */
         if (message.photo) {
             await sendTelegramText(chatId, "📥 Passport photo received! Extracting details...", botToken);
 
@@ -92,13 +111,13 @@ exports.telegramBotWebhook = onRequest({
                 generationConfig: { responseMimeType: "application/json" }
             };
 
+            /* STREAMING_CHUNK:Sending payload to AI and parsing response safely... */
             let guestData;
             try {
                 const geminiResponse = await axios.post(geminiUrl, geminiPayload, { headers: { "Content-Type": "application/json" } });
                 let outputText = geminiResponse.data.candidates[0].content.parts[0].text;
                 
-                // Fix strict JSON parsing error by stripping formatting
-                outputText = outputText.replace(/```[a-zA-Z]*\n?/gi, '').replace(/```\n?/g, '').trim();
+                outputText = outputText.replace(/`{3}[a-zA-Z]*\n?/gi, '').replace(/`{3}\n?/g, '').trim();
                 guestData = JSON.parse(outputText);
             } catch (extractErr) {
                 console.error("Gemini Extraction Error:", extractErr);
@@ -116,6 +135,13 @@ exports.telegramBotWebhook = onRequest({
             
             await sendTelegramText(chatId, summaryText, botToken);
 
+            /* STREAMING_CHUNK:Tagging the property and saving to database... */
+            let chatProperty = "UNASSIGNED";
+            const mappingSnap = await chatMappingRef.get();
+            if (mappingSnap.exists) {
+                chatProperty = mappingSnap.data().property;
+            }
+
             const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
             let docRef;
             try {
@@ -125,6 +151,7 @@ exports.telegramBotWebhook = onRequest({
                     .doc("data")
                     .collection("submissions")
                     .add({
+                        property: chatProperty,
                         firstName: (guestData.firstName || "").toUpperCase(),
                         lastName: (guestData.lastName || "").toUpperCase(),
                         passportNumber: (guestData.passportNumber || "").toUpperCase().replace(/\s/g, ''),
@@ -143,13 +170,13 @@ exports.telegramBotWebhook = onRequest({
                 return res.status(200).send({ ok: true });
             }
 
+            /* STREAMING_CHUNK:Triggering dashboard alert... */
             const docId = docRef.id;
             try {
                 const scraperModule = require("./scraper");
                 await scraperModule.executeTM30Submission(appId, docId);
             } catch (err) {
                 console.error("Scraper execution crashed:", err);
-                
                 await axios.post(`https://api.telegram.org/bot${botToken}/sendMessage`, {
                     chat_id: chatId,
                     text: `❌ Dashboard Push Failed:\n\n${err.message.substring(0, 800)}` 
