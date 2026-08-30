@@ -89,9 +89,11 @@ exports.telegramBotWebhook = onRequest({
             const downloadResponse = await axios.get(fileUrl, { responseType: "arraybuffer" });
             const imageBase64 = Buffer.from(downloadResponse.data).toString("base64");
 
+            // UPGRADED PROMPT to target Middle Name
             const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${geminiKey}`;
             const prompt = `Analyze this passport biographical page. Extract the fields and return them strictly inside a valid flat JSON block containing: 
-            firstName, 
+            firstName (First name only), 
+            middleName (Extract middle name if present in the given names. Leave blank if none),
             lastName, 
             passportNumber, 
             nationality (IMPORTANT: Convert the country into the standard English demonym used in Asian immigration forms. e.g., USA becomes 'AMERICAN', UK becomes 'BRITISH', France becomes 'FRENCH', Germany becomes 'GERMAN'), 
@@ -153,7 +155,6 @@ exports.telegramBotWebhook = onRequest({
             const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
             const cleanPassport = (guestData.passportNumber || "").toUpperCase().replace(/\s/g, '');
             
-            // Only run the duplicate check if a valid passport number was actually extracted
             if (cleanPassport && cleanPassport.length > 3) {
                 const submissionsRef = db.collection("artifacts").doc(appId).collection("public").doc("data").collection("submissions");
                 const dupQuery = await submissionsRef.where("passportNumber", "==", cleanPassport).get();
@@ -161,7 +162,6 @@ exports.telegramBotWebhook = onRequest({
                 let isDuplicate = false;
                 dupQuery.forEach(doc => {
                     const status = doc.data().status;
-                    // If it is anything OTHER than completed/failed, it is currently sitting in the queue
                     if (status !== 'completed' && status !== 'failed') {
                         isDuplicate = true;
                     }
@@ -175,7 +175,7 @@ exports.telegramBotWebhook = onRequest({
 
             /* STREAMING_CHUNK:Summarizing success back to Telegram... */
             const summaryText = `🔍 *Extracted Passport Details:*\n` +
-                `• *Name:* ${guestData.firstName || "N/A"} ${guestData.lastName || ""}\n` +
+                `• *Name:* ${guestData.firstName || "N/A"} ${guestData.middleName ? guestData.middleName + ' ' : ''}${guestData.lastName || ""}\n` +
                 `• *Passport No:* \`${cleanPassport || "N/A"}\`\n` +
                 `• *Nationality:* ${guestData.nationality || "N/A"}\n` +
                 `• *DOB:* ${guestData.dobDay || "-"}/${guestData.dobMonth || "-"}/${guestData.dobYear || "-"}\n` +
@@ -201,6 +201,7 @@ exports.telegramBotWebhook = onRequest({
                     .add({
                         property: chatProperty,
                         firstName: (guestData.firstName || "").toUpperCase(),
+                        middleName: (guestData.middleName || "").toUpperCase(),
                         lastName: (guestData.lastName || "").toUpperCase(),
                         passportNumber: cleanPassport,
                         nationality: (guestData.nationality || "").toUpperCase(),
@@ -208,6 +209,8 @@ exports.telegramBotWebhook = onRequest({
                         dobMonth: guestData.dobMonth || "",
                         dobYear: guestData.dobYear || "",
                         gender: (guestData.gender || "").toUpperCase(),
+                        checkoutDate: "", // Initialized blank for UI insertion
+                        phoneNo: "",      // Initialized blank for UI insertion
                         status: "processing", 
                         chatId: chatId,
                         createdAt: admin.firestore.FieldValue.serverTimestamp()
