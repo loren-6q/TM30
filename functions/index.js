@@ -119,9 +119,8 @@ exports.telegramBotWebhook = onRequest({
 
             for (let attempt = 0; attempt < maxRetries; attempt++) {
                 try {
-                    // If this is a retry, wait a few seconds before hitting the API again
                     if (attempt > 0) {
-                        const delayMs = (Math.pow(2, attempt) * 1000) + Math.floor(Math.random() * 1000); // e.g. 2s, 4s, 8s + random ms
+                        const delayMs = (Math.pow(2, attempt) * 1000) + Math.floor(Math.random() * 1000);
                         await new Promise(resolve => setTimeout(resolve, delayMs));
                     }
 
@@ -131,33 +130,53 @@ exports.telegramBotWebhook = onRequest({
                     outputText = outputText.replace(/`{3}[a-zA-Z]*\n?/gi, '').replace(/`{3}\n?/g, '').trim();
                     guestData = JSON.parse(outputText);
                     success = true;
-                    break; // Successfully got the data, exit the retry loop
+                    break;
                     
                 } catch (extractErr) {
                     lastError = extractErr;
-                    
-                    // If the error is 429 (Too Many Requests), loop around and try again.
                     if (extractErr.response && extractErr.response.status === 429) {
                         console.log(`Rate limit hit. Retrying... Attempt ${attempt + 1} of ${maxRetries}`);
                         continue;
                     } else {
-                        // If it's a different error (like a bad photo), stop trying.
                         break;
                     }
                 }
             }
 
-            // If it failed all 5 attempts
             if (!success) {
                 console.error("Gemini Extraction Error:", lastError);
                 await sendTelegramText(chatId, `❌ *AI Extraction Failed:*\n\nCould not read the passport cleanly or AI is overloaded. Please try this passport again in a minute.\n\n_System Error: ${lastError.message}_`, botToken);
                 return res.status(200).send({ ok: true });
             }
 
+            /* STREAMING_CHUNK:Checking for Active Duplicates in the Dashboard Queue... */
+            const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+            const cleanPassport = (guestData.passportNumber || "").toUpperCase().replace(/\s/g, '');
+            
+            // Only run the duplicate check if a valid passport number was actually extracted
+            if (cleanPassport && cleanPassport.length > 3) {
+                const submissionsRef = db.collection("artifacts").doc(appId).collection("public").doc("data").collection("submissions");
+                const dupQuery = await submissionsRef.where("passportNumber", "==", cleanPassport).get();
+                
+                let isDuplicate = false;
+                dupQuery.forEach(doc => {
+                    const status = doc.data().status;
+                    // If it is anything OTHER than completed/failed, it is currently sitting in the queue
+                    if (status !== 'completed' && status !== 'failed') {
+                        isDuplicate = true;
+                    }
+                });
+
+                if (isDuplicate) {
+                    await sendTelegramText(chatId, `⚠️ *Duplicate Blocked:*\n\n${guestData.firstName} (${cleanPassport}) is already waiting in your active Dashboard queue! Skipping to prevent double-upload.`, botToken);
+                    return res.status(200).send({ ok: true });
+                }
+            }
+
             /* STREAMING_CHUNK:Summarizing success back to Telegram... */
             const summaryText = `🔍 *Extracted Passport Details:*\n` +
                 `• *Name:* ${guestData.firstName || "N/A"} ${guestData.lastName || ""}\n` +
-                `• *Passport No:* \`${guestData.passportNumber || "N/A"}\`\n` +
+                `• *Passport No:* \`${cleanPassport || "N/A"}\`\n` +
                 `• *Nationality:* ${guestData.nationality || "N/A"}\n` +
                 `• *DOB:* ${guestData.dobDay || "-"}/${guestData.dobMonth || "-"}/${guestData.dobYear || "-"}\n` +
                 `• *Gender:* ${guestData.gender || "N/A"}\n\n` +
@@ -172,7 +191,6 @@ exports.telegramBotWebhook = onRequest({
                 chatProperty = mappingSnap.data().property;
             }
 
-            const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
             let docRef;
             try {
                 docRef = await db.collection("artifacts")
@@ -184,7 +202,7 @@ exports.telegramBotWebhook = onRequest({
                         property: chatProperty,
                         firstName: (guestData.firstName || "").toUpperCase(),
                         lastName: (guestData.lastName || "").toUpperCase(),
-                        passportNumber: (guestData.passportNumber || "").toUpperCase().replace(/\s/g, ''),
+                        passportNumber: cleanPassport,
                         nationality: (guestData.nationality || "").toUpperCase(),
                         dobDay: guestData.dobDay || "",
                         dobMonth: guestData.dobMonth || "",
