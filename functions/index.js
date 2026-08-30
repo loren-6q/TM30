@@ -111,20 +111,50 @@ exports.telegramBotWebhook = onRequest({
                 generationConfig: { responseMimeType: "application/json" }
             };
 
-            /* STREAMING_CHUNK:Sending payload to AI and parsing response safely... */
-            let guestData;
-            try {
-                const geminiResponse = await axios.post(geminiUrl, geminiPayload, { headers: { "Content-Type": "application/json" } });
-                let outputText = geminiResponse.data.candidates[0].content.parts[0].text;
-                
-                outputText = outputText.replace(/`{3}[a-zA-Z]*\n?/gi, '').replace(/`{3}\n?/g, '').trim();
-                guestData = JSON.parse(outputText);
-            } catch (extractErr) {
-                console.error("Gemini Extraction Error:", extractErr);
-                await sendTelegramText(chatId, `❌ *AI Extraction Failed:*\n\nCould not read the passport cleanly. Please ensure the photo is flat and glare-free.\n\n_System Error: ${extractErr.message}_`, botToken);
+            /* STREAMING_CHUNK:Sending payload to AI with smart rate-limit retries... */
+            let guestData = null;
+            let success = false;
+            let lastError = null;
+            const maxRetries = 5;
+
+            for (let attempt = 0; attempt < maxRetries; attempt++) {
+                try {
+                    // If this is a retry, wait a few seconds before hitting the API again
+                    if (attempt > 0) {
+                        const delayMs = (Math.pow(2, attempt) * 1000) + Math.floor(Math.random() * 1000); // e.g. 2s, 4s, 8s + random ms
+                        await new Promise(resolve => setTimeout(resolve, delayMs));
+                    }
+
+                    const geminiResponse = await axios.post(geminiUrl, geminiPayload, { headers: { "Content-Type": "application/json" } });
+                    let outputText = geminiResponse.data.candidates[0].content.parts[0].text;
+                    
+                    outputText = outputText.replace(/`{3}[a-zA-Z]*\n?/gi, '').replace(/`{3}\n?/g, '').trim();
+                    guestData = JSON.parse(outputText);
+                    success = true;
+                    break; // Successfully got the data, exit the retry loop
+                    
+                } catch (extractErr) {
+                    lastError = extractErr;
+                    
+                    // If the error is 429 (Too Many Requests), loop around and try again.
+                    if (extractErr.response && extractErr.response.status === 429) {
+                        console.log(`Rate limit hit. Retrying... Attempt ${attempt + 1} of ${maxRetries}`);
+                        continue;
+                    } else {
+                        // If it's a different error (like a bad photo), stop trying.
+                        break;
+                    }
+                }
+            }
+
+            // If it failed all 5 attempts
+            if (!success) {
+                console.error("Gemini Extraction Error:", lastError);
+                await sendTelegramText(chatId, `❌ *AI Extraction Failed:*\n\nCould not read the passport cleanly or AI is overloaded. Please try this passport again in a minute.\n\n_System Error: ${lastError.message}_`, botToken);
                 return res.status(200).send({ ok: true });
             }
 
+            /* STREAMING_CHUNK:Summarizing success back to Telegram... */
             const summaryText = `🔍 *Extracted Passport Details:*\n` +
                 `• *Name:* ${guestData.firstName || "N/A"} ${guestData.lastName || ""}\n` +
                 `• *Passport No:* \`${guestData.passportNumber || "N/A"}\`\n` +
