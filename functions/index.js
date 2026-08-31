@@ -66,15 +66,38 @@ exports.telegramBotWebhook = onRequest({
             return res.status(200).send({ ok: true });
         }
 
-        /* STREAMING_CHUNK:Handling standard commands... */
         if (message.text && message.text.startsWith("/start")) {
             await sendTelegramText(chatId, "Sawadee krap! Welcome to the TM30 Submitter.\n\nSend me a flat, clear photo of a guest's passport biographical page to extract their details to the Web Dashboard.", botToken);
             return res.status(200).send({ ok: true });
         }
 
-        /* STREAMING_CHUNK:Processing incoming passport photos... */
+        /* STREAMING_CHUNK:Processing incoming passport photos and captions... */
         if (message.photo) {
-            await sendTelegramText(chatId, "📥 Passport photo received! Extracting details...", botToken);
+            // Check for Room Number in the caption (handling grouped photos)
+            let captionText = message.caption || "";
+            let mediaGroupId = message.media_group_id || null;
+            let roomNumber = "";
+
+            if (mediaGroupId) {
+                const mgRef = db.collection("system").doc("media_groups").collection("groups").doc(mediaGroupId);
+                if (captionText) {
+                    roomNumber = captionText.trim();
+                    // Save caption for the rest of the photos in this batch to find
+                    await mgRef.set({ roomNumber: roomNumber, timestamp: admin.firestore.FieldValue.serverTimestamp() });
+                } else {
+                    // Slight delay to ensure the primary photo with the caption saves first
+                    await new Promise(r => setTimeout(r, 1500));
+                    const mgSnap = await mgRef.get();
+                    if (mgSnap.exists) {
+                        roomNumber = mgSnap.data().roomNumber;
+                    }
+                }
+            } else if (captionText) {
+                roomNumber = captionText.trim();
+            }
+
+            const roomTagDisplay = roomNumber ? `\n🏷️ *Tagged for Room:* ${roomNumber}` : "";
+            await sendTelegramText(chatId, `📥 Passport photo received! Extracting details...${roomTagDisplay}`, botToken);
 
             if (!botToken || !geminiKey) throw new Error("Missing API keys in Secret Manager.");
 
@@ -89,7 +112,6 @@ exports.telegramBotWebhook = onRequest({
             const downloadResponse = await axios.get(fileUrl, { responseType: "arraybuffer" });
             const imageBase64 = Buffer.from(downloadResponse.data).toString("base64");
 
-            // UPGRADED PROMPT to target Middle Name
             const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${geminiKey}`;
             const prompt = `Analyze this passport biographical page. Extract the fields and return them strictly inside a valid flat JSON block containing: 
             firstName (First name only), 
@@ -177,9 +199,7 @@ exports.telegramBotWebhook = onRequest({
             const summaryText = `🔍 *Extracted Passport Details:*\n` +
                 `• *Name:* ${guestData.firstName || "N/A"} ${guestData.middleName ? guestData.middleName + ' ' : ''}${guestData.lastName || ""}\n` +
                 `• *Passport No:* \`${cleanPassport || "N/A"}\`\n` +
-                `• *Nationality:* ${guestData.nationality || "N/A"}\n` +
-                `• *DOB:* ${guestData.dobDay || "-"}/${guestData.dobMonth || "-"}/${guestData.dobYear || "-"}\n` +
-                `• *Gender:* ${guestData.gender || "N/A"}\n\n` +
+                `• *Room Tag:* ${roomNumber || "None"}\n` +
                 `⚙ *Pushing to Web Dashboard...*`;
             
             await sendTelegramText(chatId, summaryText, botToken);
@@ -200,6 +220,7 @@ exports.telegramBotWebhook = onRequest({
                     .collection("submissions")
                     .add({
                         property: chatProperty,
+                        roomNumber: roomNumber, // Saved for the PMS magic button to find!
                         firstName: (guestData.firstName || "").toUpperCase(),
                         middleName: (guestData.middleName || "").toUpperCase(),
                         lastName: (guestData.lastName || "").toUpperCase(),
@@ -209,8 +230,8 @@ exports.telegramBotWebhook = onRequest({
                         dobMonth: guestData.dobMonth || "",
                         dobYear: guestData.dobYear || "",
                         gender: (guestData.gender || "").toUpperCase(),
-                        checkoutDate: "", // Initialized blank for UI insertion
-                        phoneNo: "",      // Initialized blank for UI insertion
+                        checkoutDate: "", 
+                        phoneNo: "",      
                         status: "processing", 
                         chatId: chatId,
                         createdAt: admin.firestore.FieldValue.serverTimestamp()
